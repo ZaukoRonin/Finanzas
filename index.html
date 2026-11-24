@@ -133,8 +133,8 @@ const SEED=[];
 const MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const FLAGS=['Fijo','Cuota','Variable','Único','Negocio'];
 const TIPOS=['Ingreso','Gasto','Interno','Rendimiento'];
-const BASE_CATS=['Sin clasificar','Supermercado','Servicios','Salud','Comida y salidas','Entretenimiento','Otra tarjeta (sin detalle)','Compras en cuotas','Suscripciones','Celular','Impuestos y percepciones','Vivienda','Transporte','Nafta','Seguro de auto','Reparación de auto','Negocio (costos)','Sueldo','Cliente (negocio)','Otros ingresos','Transferencia propia','Ida y vuelta','Pago Visa','Rendimiento'];
-const CAT_TIPO={'Transferencia propia':'Interno','Ida y vuelta':'Interno','Pago Visa':'Interno','Rendimiento':'Rendimiento','Sueldo':'Ingreso','Cliente (negocio)':'Ingreso','Otros ingresos':'Ingreso'};
+const BASE_CATS=['Sin clasificar','Supermercado','Servicios','Salud','Comida y salidas','Entretenimiento','Otra tarjeta (sin detalle)','Compras en cuotas','Suscripciones','Celular','Impuestos y percepciones','Vivienda','Transporte','Nafta','Seguro de auto','Reparación de auto','Negocio (costos)','Sueldo','Cliente (negocio)','Otros ingresos','Transferencia propia','Ida y vuelta','Pago Visa','Pago tarjeta','Rendimiento'];
+const CAT_TIPO={'Transferencia propia':'Interno','Ida y vuelta':'Interno','Pago Visa':'Interno','Pago tarjeta':'Interno','Rendimiento':'Rendimiento','Sueldo':'Ingreso','Cliente (negocio)':'Ingreso','Otros ingresos':'Ingreso'};
 const LS_KEY='finanzas_chini_v1';
 
 /* ============================ Utilidades ============================ */
@@ -165,11 +165,23 @@ const DEFAULT_STATE=()=>({months:{},mappings:{},customCats:[],
   settings:{sueldo:0,ahorro:0,colchonMeses:2,nProm:3,mpReservado:0,usd:0,tc:0,lastBackup:null},
   ui:{month:new Date().toISOString().slice(0,7),tab:'tarjeta',filterV:'pend',filterM:'pend'}});
 let state=DEFAULT_STATE(),storageOk=true;
+function migrate(st){
+  for(const m of Object.values(st.months||{})){
+    if(!m.tarjetas)m.tarjetas=[];
+    if(m.visa){m.tarjetas.push({id:uid(),idKey:'visa-'+(m.visa.meta.last4||'1'),nombre:'Visa',kind:'visa',meta:m.visa.meta,txs:m.visa.txs})}
+    delete m.visa;
+  }
+  return st;
+}
 function loadState(){
-  try{const s=localStorage.getItem(LS_KEY);if(s){const o=JSON.parse(s);const d=DEFAULT_STATE();state={...d,...o,settings:{...d.settings,...(o.settings||{})},ui:{...d.ui,...(o.ui||{})}}}}catch(e){storageOk=false}
+  try{const s=localStorage.getItem(LS_KEY);if(s){const o=JSON.parse(s);const d=DEFAULT_STATE();state=migrate({...d,...o,settings:{...d.settings,...(o.settings||{})},ui:{...d.ui,...(o.ui||{})}})}}catch(e){storageOk=false}
 }
 function save(){try{localStorage.setItem(LS_KEY,JSON.stringify(state))}catch(e){if(storageOk){storageOk=false;toast('El navegador no deja guardar datos: usá "Copia de seguridad" para no perder nada.',true)}}}
-const emptyMonth=()=>({visa:null,mp:null,extras:[],sueldo:null,proj:{}});
+const emptyMonth=()=>({tarjetas:[],mp:null,extras:[],sueldo:null,proj:{}});
+const cardsOf=m=>(m&&m.tarjetas)||[];
+const cardTxs=m=>cardsOf(m).flatMap(c=>c.txs);
+const allPagos=()=>Object.values(state.months).flatMap(x=>cardsOf(x).flatMap(c=>c.meta.pagos||[]));
+function mkCierre(y,m,d){const dt=new Date(y,m-1,d-15);return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')}
 const getMonth=k=>state.months[k]||emptyMonth();
 const ensureMonth=k=>{if(!state.months[k])state.months[k]=emptyMonth();return state.months[k]};
 const allCats=()=>[...BASE_CATS,...state.customCats.filter(c=>!BASE_CATS.includes(c))];
@@ -210,8 +222,8 @@ function amountIn(items,x0,x1){
 }
 const cleanDesc=s=>s.replace(/\(.*?\)/g,'').replace(/\s*\$\s*$/,'').replace(/\s+/g,' ').trim();
 
-async function parseVisaPdf(file){
-  const pages=await pdfPages(file),rows=pages.flatMap(p=>p.rows.map(r=>({...r,page:p.n})));
+async function parseVisaPdf(file,pages0){
+  const pages=pages0||await pdfPages(file),rows=pages.flatMap(p=>p.rows.map(r=>({...r,page:p.n})));
   const meta={fuente:'pdf',archivo:file.name,pagos:[],cuotasProx:[]},txs=[];
   let state_=null,lastDate=null;
   // fechas de cierre (página 1)
@@ -263,9 +275,11 @@ async function parseVisaPdf(file){
   const suma=-txs.reduce((a,t)=>a+t.monto,0);
   meta.suma=suma;meta.control=meta.total!=null?Math.round((suma-meta.total)*100)/100:null;
   if(meta.fechas&&meta.fechas[2]){
-    const [d,m,y]=meta.fechas[2].split('/').map(Number),dt=new Date(2000+y,m-1,d-10);
-    meta.monthKey=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');meta.cierre=iso(d,m,y);
+    const [d,m,y]=meta.fechas[2].split('/').map(Number);
+    meta.monthKey=mkCierre(2000+y,m,d);meta.cierre=iso(d,m,y);
   }
+  const lm=rows.map(r=>r.text).join(' ').match(/terminada en\s+(\d{4})/i);
+  meta.card={kind:'visa',last4:lm?lm[1]:null,nombre:'Visa'+(lm?' ···'+lm[1]:'')};
   return {meta,txs};
 }
 
@@ -337,6 +351,134 @@ async function parseTableFile(file,kind){
   return {meta:{fuente:'excel',archivo:file.name,monthKey:dates[Math.floor(dates.length/2)].slice(0,7),suma:txs.reduce((a,t)=>a+t.monto,0),control:null,pagos:[],cuotasProx:[]},txs};
 }
 
+
+/* ---- American Express (Santander) en PDF ---- */
+const MES3=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const mes3=t=>MES3.indexOf(norm(t).slice(0,3));
+function amexAmt(items,x0,x1){
+  const its=items.filter(i=>i.x>=x0&&i.x<x1);if(!its.length)return null;
+  const m=its.map(i=>i.s).join(' ').match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*(-?)/);
+  if(!m)return null;const v=parseAR(m[1]);return m[2]==='-'?-v:v;
+}
+function parseAmexPdf(file,pages){
+  const rows=pages.flatMap(p=>p.rows.map(r=>({...r,page:p.n}))),meta={fuente:'pdf',archivo:file.name,pagos:[],cuotasProx:[]},txs=[];
+  const all=rows.map(r=>r.text).join('\n');
+  const cm=all.match(/CIERRE\s*(\d{1,2})\s*([A-Za-z]{3})\w*\.?\s*(\d{2})(?!\d)/),vm=all.match(/VENCIMIENTO\s*(\d{1,2})\s*([A-Za-z]{3})\w*\.?\s*(\d{2})(?!\d)/);
+  let cy=null,cmo=null,cd=null;
+  if(cm&&mes3(cm[2])>=0){cd=+cm[1];cmo=mes3(cm[2])+1;cy=2000+ +cm[3];meta.cierre=iso(cd,cmo,cy);meta.monthKey=mkCierre(cy,cmo,cd)}
+  if(vm&&mes3(vm[2])>=0)meta.vencimiento=iso(+vm[1],mes3(vm[2])+1,2000+ +vm[3]);
+  const tm=all.match(/Tarjeta\s+(\d{4})\s+Total Consumos/i);
+  meta.card={kind:'amex',last4:tm?tm[1]:null,nombre:'American Express'+(tm?' ···'+tm[1]:'')};
+  for(const r of rows){
+    const N=norm(r.text);
+    if(/saldo\s*anterior/.test(N)&&meta.saldoAnterior==null){const a=amexAmt(r.items,380,500);if(a!=null)meta.saldoAnterior=a}
+    if(/saldo\s*actual/.test(N)){const a=amexAmt(r.items,380,500);if(a!=null&&meta.total==null){meta.total=a;meta.totalUsd=amexAmt(r.items,500,999)}}
+    if(/pago\s*minimo/.test(N)){const a=amexAmt(r.items,380,520);if(a!=null&&meta.minimo==null)meta.minimo=a}
+    const f=r.items[0],g=r.items[1];if(!f||f.x>=40)continue;
+    let dd,mm;
+    let m1=f.s.match(/^(\d{1,2})\s*([A-Za-zñ]{3,})\.?(?:\s|$)/);
+    if(m1){dd=+m1[1];mm=mes3(m1[2])}
+    else if(/^\d{1,2}$/.test(f.s)&&g&&/^[A-Za-zñ]{3,}\.?$/.test(g.s)){dd=+f.s;mm=mes3(g.s)}
+    else continue;
+    if(mm==null||mm<0)continue;
+    const ars=amexAmt(r.items,380,500),usd=amexAmt(r.items,500,999);
+    if(ars==null&&usd==null)continue;
+    const desc=cleanDesc(r.items.filter(i=>i.x>=130&&i.x<380&&i.s!=='$'&&i.s!=='*').map(i=>i.s).join(' '));
+    if(!desc)continue;
+    let yy=cy||new Date().getFullYear();if(cmo!=null&&mm+1>cmo)yy=cy-1;
+    const fecha=iso(dd,mm+1,yy);
+    if(/^su pago/.test(norm(desc))){if(ars!=null)meta.pagos.push(Math.abs(ars));continue}
+    txs.push({id:uid(),fecha,desc,monto:ars!=null?-ars:0,usd:usd||0,cuota:null});
+  }
+  if(meta.total==null&&!txs.length)throw new Error('no encontré movimientos ni saldo; ¿es el resumen de American Express (Santander) en PDF?');
+  const suma=-txs.reduce((a,t)=>a+t.monto,0),pg=meta.pagos.reduce((a,b)=>a+b,0);
+  meta.suma=suma;meta.control=(meta.total!=null&&meta.saldoAnterior!=null)?Math.round(((meta.saldoAnterior-pg+suma)-meta.total)*100)/100:null;
+  if(meta.total!=null&&meta.total<-0.005)meta.aviso='Este resumen cierra con saldo a favor de '+$2(-meta.total)+'.';
+  else if(meta.saldoAnterior!=null&&meta.saldoAnterior-pg>0.5)meta.aviso='El resumen anterior tenía un saldo impago de '+$2(meta.saldoAnterior-pg)+' que no se suma como gasto.';
+  return {meta,txs};
+}
+
+/* ---- Visa en Excel (el que baja el banco) ---- */
+const moneyCell=v=>{if(typeof v==='number')return v;if(v==null||String(v).trim()==='')return null;return parseAR(v)};
+async function parseVisaXlsx(file){
+  const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true}),ws=wb.Sheets[wb.SheetNames[0]],aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
+  const meta={fuente:'excel',archivo:file.name,pagos:[],cuotasProx:[]},txs=[];
+  let st=null,last=null,last4=null;
+  for(let i=0;i<aoa.length;i++){
+    const r=aoa[i],c0=norm(r[0]),c1=norm(r[1]),nx=aoa[i+1]||[];
+    const mt=c0.match(/^tarjeta visa.*terminada en (\d{4})/);if(mt&&!last4)last4=mt[1];
+    if(c0==='fecha de cierre'){meta.cierre=parseDateAny(nx[0]);meta.vencimiento=parseDateAny(nx[1]);continue}
+    if(c0==='total a pagar'){meta.total=moneyCell(nx[0]);const u=/U\$S/i.test(String(nx[1]))?moneyCell(nx[1]):null;meta.totalUsd=u;continue}
+    if(c0==='pago de tarjeta y devoluciones'){st='pagos';continue}
+    if(/^tarjeta de .* - visa/.test(c0)){st='consumos';const m2=c0.match(/terminada en (\d{4})/);if(m2)last4=m2[1];continue}
+    if(c0==='otros conceptos'){st='imp';continue}
+    if(/^total de visa/.test(c0)){st=null;continue}
+    if(c0.startsWith('aviso importante')){st=null;continue}
+    if(!st)continue;
+    if(st==='imp'){
+      if(c0==='descripcion'||!r[0])continue;const a=moneyCell(r[1]);if(a==null)continue;
+      const desc=cleanDesc(String(r[0]));if(!desc)continue;
+      txs.push({id:uid(),fecha:meta.cierre||null,desc,monto:-a,usd:0,cuota:null,seccion:'imp'});continue;
+    }
+    if(c1==='descripcion'||c0==='fecha')continue;
+    const dt=parseDateAny(r[0]);if(dt)last=dt;
+    const desc=cleanDesc(String(r[1]||'')),ars=moneyCell(r[4]),usd=moneyCell(r[5]);
+    if(!desc||(ars==null&&usd==null))continue;
+    if(st==='pagos'){
+      if(/^su pago en pesos/.test(norm(desc))){if(ars!=null)meta.pagos.push(Math.abs(ars));continue}
+      if(/^su pago en usd/.test(norm(desc)))continue;
+    }
+    const cm=String(r[2]||'').match(/(\d+)\s*de\s*(\d+)/);
+    txs.push({id:uid(),fecha:dt||last,desc,monto:ars!=null?-ars:0,usd:usd||0,cuota:cm?[+cm[1],+cm[2]]:null,seccion:st});
+  }
+  if(!txs.length)throw new Error('no encontré movimientos en el Excel de Visa');
+  meta.suma=-txs.reduce((a,t)=>a+t.monto,0);meta.control=meta.total!=null?Math.round((meta.suma-meta.total)*100)/100:null;
+  if(meta.cierre){const [y,m,d]=meta.cierre.split('-').map(Number);meta.monthKey=mkCierre(y,m,d)}
+  meta.card={kind:'visa',last4,nombre:'Visa'+(last4?' ···'+last4:'')};
+  return {meta,txs};
+}
+
+/* ---- Lectura genérica (cualquier banco): mejor esfuerzo, sin control de cuadre ---- */
+function parseGenericCardPdf(file,pages){
+  const txs=[],meta={fuente:'pdf',archivo:file.name,pagos:[],cuotasProx:[],generico:true},yNow=+state.ui.month.slice(0,4);
+  const amtRe=/^-?\$?\s*-?\d{1,3}(?:\.\d{3})*,\d{2}-?$/;
+  for(const p of pages)for(const r of p.rows){
+    const its=r.items;if(its.length<3)continue;
+    let date=null,k=0;const a=its[0].s,b=its[1]&&its[1].s;let m;
+    if((m=a.match(/^(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?(?:\s|$)/))){date=iso(m[1],m[2],m[3]||yNow);k=1}
+    else if((m=a.match(/^(\d{1,2})\s+([A-Za-zñ]{3,})\.?(?:\s|$)/))&&mes3(m[2])>=0){date=iso(m[1],mes3(m[2])+1,yNow);k=1}
+    else if((m=a.match(/^(\d{1,2})$/))&&b&&mes3(b)>=0&&/^[A-Za-zñ]{3,}\.?$/.test(b)){date=iso(m[1],mes3(b)+1,yNow);k=2}
+    else continue;
+    const am=its.slice(k).filter(i=>amtRe.test(i.s));if(!am.length)continue;
+    const last=am[am.length-1],neg=/-/.test(last.s);let v=parseAR(last.s.replace(/\$/g,''));if(v==null)continue;if(neg&&v>0)v=-v;
+    const desc=cleanDesc(its.slice(k).filter(i=>i.x<last.x&&!amtRe.test(i.s)&&!/^\d{1,3}$/.test(i.s)&&i.s!=='$'&&i.s!=='*').map(i=>i.s).join(' '));
+    if(!desc||/^(saldo|total|pago|su pago)/.test(norm(desc)))continue;
+    txs.push({id:uid(),fecha:date,desc,monto:-v,usd:0,cuota:null});
+  }
+  if(txs.length<1)throw new Error('no reconocí el formato de este resumen. Probá con el Excel/CSV del banco, o cargá los consumos a mano en la pestaña 3');
+  meta.suma=-txs.reduce((a,t)=>a+t.monto,0);meta.control=null;
+  meta.aviso='Lectura genérica: este formato no lo conozco, así que revisá que estén todos los consumos y los importes. No hay control de cuadre.';
+  const ds=txs.map(t=>t.fecha).sort();meta.monthKey=ds[Math.floor(ds.length/2)].slice(0,7);
+  const base=file.name.replace(/\.[^.]+$/,'').slice(0,22);
+  meta.card={kind:'generic',last4:null,nombre:'Tarjeta ('+base+')',base};
+  return {meta,txs};
+}
+
+/* ---- Detecta qué tipo de resumen es ---- */
+async function parseCardFile(file){
+  if(/\.pdf$/i.test(file.name)){
+    const pages=await pdfPages(file),N=norm(pages.flatMap(p=>p.rows.map(r=>r.text)).join('\n'));
+    let first=null;
+    if(/american express/.test(N)&&/saldo\s*anterior/.test(N)){try{return parseAmexPdf(file,pages)}catch(e){first=e}}
+    else if(/resumen visa|visa credito|terminada en/.test(N)&&/movimientos de /.test(N)){try{return await parseVisaPdf(file,pages)}catch(e){first=e}}
+    try{return parseGenericCardPdf(file,pages)}catch(e){throw first||e}
+  }
+  const wb=XLSX.read(await file.arrayBuffer(),{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]],top=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''}).slice(0,8).map(r=>norm(r[0]));
+  if(top.includes('movimientos del resumen'))return parseVisaXlsx(file);
+  const p=await parseTableFile(file,'visa');p.meta.pagos=p.meta.pagos||[];
+  const base=file.name.replace(/\.[^.]+$/,'').slice(0,22);p.meta.card={kind:'generic',last4:null,nombre:'Tarjeta ('+base+')',base};return p;
+}
+
 /* ============================ Clasificación ============================ */
 const SEED_KEY={},SEED_EXACT={};
 for(const [src,fecha,monto,desc,tipo,cat,flag] of SEED){
@@ -347,7 +489,7 @@ for(const [src,fecha,monto,desc,tipo,cat,flag] of SEED){
 function seedKey(src,k){const c=SEED_KEY[src+'|'+k];if(!c)return null;let b=null,n=0;for(const kk in c){if(kk==='v')continue;if(c[kk]>n){n=c[kk];b=c.v[kk]}}return b}
 const RULES=[
  [/pago de servicio|metrogas|aysa|edenor|edesur|absa|telecentro|fibertel|flow\b|\babl\b|arba|obra social|osde|swiss medical|galeno|medicus/,'Servicios','Fijo'],
- [/\bcoto\b|carrefour|jumbo|disco\b|changomas|walmart|\bvea\b|la anonima|supermercado|autoservicio/,'Supermercado','Variable'],
+ [/\bcoto\b|cencosud|carrefour|jumbo|disco\b|changomas|walmart|\bvea\b|la anonima|supermercado|autoservicio/,'Supermercado','Variable'],
  [/farmacia|farmacity|clinica|laboratorio|odontolog/,'Salud','Variable'],
  [/mcdonald|burger|cafe\b|confiteria|restaurante|pizzer|parrilla|rotiseria|heladeria|starbucks|mostaza|kfc|pedidosya|rappi/,'Comida y salidas','Variable'],
  [/teatro|\bcine\b|hoyts|showcase|cinemark|allaccess|eventbrite|steam|playstation|xbox|nintendo/,'Entretenimiento','Variable'],
@@ -362,7 +504,7 @@ function defaultRule(src,t,ctx){
     if(/^rendimientos/.test(d))return out('Rendimiento','Rendimiento');
     if(ctx.own.length&&ctx.own.every(tk=>d.includes(tk))&&/transferencia/.test(d)){
       const pv=ctx.visaPagos.some(p=>Math.abs(Math.abs(t.monto)-p)<=100);
-      return out('Interno',pv?'Pago Visa':'Transferencia propia');
+      return out('Interno',pv?'Pago tarjeta':'Transferencia propia');
     }
     if(/^pago de resumen/.test(d))return out('Gasto','Otra tarjeta (sin detalle)','Variable');
   }
@@ -384,14 +526,14 @@ function classifyTx(src,t,ctx){
 /* ============================ Cálculos ============================ */
 function summarize(key){
   const m=state.months[key];if(!m)return null;
-  const S={ingSueldo:m.sueldo!=null?m.sueldo:state.settings.sueldo,ingClientes:0,ingOtros:0,rend:0,gasto:0,gastoVisa:0,gastoMP:0,gastoExtra:0,porFlag:{},porCat:{},pend:0,sinMarcar:0,usd:0};
+  const S={ingSueldo:m.sueldo!=null?m.sueldo:state.settings.sueldo,ingClientes:0,ingOtros:0,rend:0,gasto:0,gastoVisa:0,gastoMP:0,gastoExtra:0,porTarjeta:{},porFlag:{},porCat:{},pend:0,sinMarcar:0,usd:0};
   FLAGS.forEach(f=>S.porFlag[f]=0);
-  const lists=[['visa',m.visa?m.visa.txs:[]],['mp',m.mp?m.mp.txs:[]],['extra',m.extras||[]]];
-  for(const [src,arr] of lists)for(const t of arr){
+  const lists=[...cardsOf(m).map(c=>['visa',c.txs,c.nombre]),['mp',m.mp?m.mp.txs:[]],['extra',m.extras||[]]];
+  for(const [src,arr,nm] of lists)for(const t of arr){
     if(t.tipo==='Ingreso'){if(t.cat==='Cliente (negocio)')S.ingClientes+=t.monto;else if(t.cat==='Sueldo')S.ingSueldo+=t.monto;else S.ingOtros+=t.monto;if(t.cat==='Sin clasificar')S.pend++}
     else if(t.tipo==='Rendimiento')S.rend+=t.monto;
     else if(t.tipo==='Gasto'){
-      const v=-t.monto;S.gasto+=v;if(src==='visa')S.gastoVisa+=v;else if(src==='mp')S.gastoMP+=v;else S.gastoExtra+=v;
+      const v=-t.monto;S.gasto+=v;if(src==='visa'){S.gastoVisa+=v;S.porTarjeta[nm]=(S.porTarjeta[nm]||0)+v}else if(src==='mp')S.gastoMP+=v;else S.gastoExtra+=v;
       if(t.flag&&FLAGS.includes(t.flag))S.porFlag[t.flag]+=v;else S.sinMarcar+=v;
       S.porCat[t.cat]=(S.porCat[t.cat]||0)+v;if(t.cat==='Sin clasificar')S.pend++;
       S.usd+=t.usd||0;
@@ -406,7 +548,7 @@ const sortedKeys=()=>Object.keys(state.months).sort();
 function projection(key){
   const keys=sortedKeys().filter(k=>k<=key),last=keys.slice(-Math.max(1,state.settings.nProm)),sums=last.map(summarize),S=summarize(key)||summarize(last[last.length-1]);
   const avg=f=>sums.length?sums.reduce((a,s)=>a+f(s),0)/sums.length:0,m=getMonth(key);
-  const d={fijos:S?S.porFlag.Fijo:0,cuotas:(m.visa&&m.visa.meta.cuotasProx&&m.visa.meta.cuotasProx[0])?m.visa.meta.cuotasProx[0].monto:0,variables:avg(s=>s.porFlag.Variable),unicos:0,negocio:avg(s=>s.negocioNeto),sueldo:S?S.ingSueldo:state.settings.sueldo,otros:0};
+  const d={fijos:S?S.porFlag.Fijo:0,cuotas:cardsOf(m).reduce((a,c)=>a+((c.meta.cuotasProx&&c.meta.cuotasProx[0])?c.meta.cuotasProx[0].monto:0),0),variables:avg(s=>s.porFlag.Variable),unicos:0,negocio:avg(s=>s.negocioNeto),sueldo:S?S.ingSueldo:state.settings.sueldo,otros:0};
   const o=m.proj||{},v={};for(const k in d)v[k]=o[k]!=null?o[k]:d[k];
   v.ingresos=v.sueldo+v.negocio+v.otros;v.gastos=v.fijos+v.cuotas+v.variables+v.unicos;
   v.ahorroProy=v.ingresos-v.gastos;v.ahorroObj=state.settings.ahorro;
@@ -427,23 +569,19 @@ function renderChrome(){
   document.getElementById('ySel').innerHTML=[...ys].sort().map(y=>`<option${y===cy?' selected':''}>${y}</option>`).join('');
   const keys=sortedKeys();
   document.getElementById('monthChips').innerHTML=keys.map(k=>`<button class="chip${k===state.ui.month?' on':''}" data-act="goMonth" data-k="${k}">${monthLabel(k)}</button>`).join('');
-  const p=pendCount(state.ui.month),tabs=[['tarjeta','1 · Tarjeta'],['mp','2 · Mercado Pago'],['extras','3 · Ingresos y gastos extra'],['resumen','4 · Resumen'],['historial','Historial'],['ajustes','Ajustes']];
+  const p=pendCount(state.ui.month),tabs=[['tarjeta','1 · Tarjetas'],['mp','2 · Mercado Pago'],['extras','3 · Ingresos y gastos extra'],['resumen','4 · Resumen'],['historial','Historial'],['ajustes','Ajustes']];
   document.getElementById('tabs').innerHTML=tabs.map(([k,l])=>`<button class="${state.ui.tab===k?'on':''}" data-act="tab" data-k="${k}">${l}${k==='resumen'&&p?`<span class="badge">${p}</span>`:''}</button>`).join('');
 }
-function render(){renderChrome();const t=state.ui.tab;$app.innerHTML=({tarjeta:()=>viewSource('visa'),mp:()=>viewSource('mp'),extras:viewExtras,resumen:viewResumen,historial:viewHistorial,ajustes:viewAjustes})[t]();}
+function render(){renderChrome();const t=state.ui.tab;$app.innerHTML=({tarjeta:viewCards,mp:()=>viewSource('mp'),extras:viewExtras,resumen:viewResumen,historial:viewHistorial,ajustes:viewAjustes})[t]();}
 
-function introCard(){return `<div class="card"><h2>Cómo usar</h2><ol class="steps"><li>Elegí el mes arriba.</li><li>Subí el PDF del resumen de la <b>tarjeta</b> (pestaña 1) y el de <b>Mercado Pago</b> (pestaña 2). Si el total cuadra, aparece un ✓ verde.</li><li>Revisá lo que quedó "Sin clasificar": la página recuerda tus cambios para los próximos meses.</li><li>Cargá tu sueldo y lo que movés en efectivo en la pestaña 3, y mirá el resumen en la 4.</li></ol><p class="small mut">Tus datos quedan solo en este navegador y los PDF no salen de tu equipo. En Ajustes podés bajar una copia de seguridad.</p></div>`}
-function viewSource(src){
-  const m=getMonth(state.ui.month),d=m[src],isV=src==='visa',title=isV?'Resumen de la tarjeta (Visa)':'Resumen de Mercado Pago',filterKey=isV?'filterV':'filterM';
-  let h=(sortedKeys().length?'':introCard())+`<div class="card"><h2>${title} — ${monthLabel(state.ui.month)}</h2>
-  <label class="drop" data-drop="${src}"><input type="file" accept=".pdf,.xlsx,.xls,.csv" data-file="${src}">
-  <b>${d?'Reemplazar archivo':'Subir archivo'}</b><br><span class="small">Tocá para elegir el PDF (o arrastralo acá). También acepta Excel/CSV (experimental). El archivo no sale de tu compu.</span></label>`;
-  if(!d){h+=`<p class="mut small">Todavía no hay ${isV?'tarjeta':'Mercado Pago'} cargado para este mes.</p></div>`;return h}
+function introCard(){return `<div class="card"><h2>Cómo usar</h2><ol class="steps"><li>Elegí el mes arriba.</li><li>Subí el resumen de <b>cada tarjeta</b> (pestaña 1, una por una) y el de <b>Mercado Pago</b> (pestaña 2). Si el total cuadra, aparece un ✓ verde.</li><li>Revisá lo que quedó "Sin clasificar": la página recuerda tus cambios para los próximos meses.</li><li>Cargá tu sueldo y lo que movés en efectivo en la pestaña 3, y mirá el resumen en la 4.</li></ol><p class="small mut">Tus datos quedan solo en este navegador y los PDF no salen de tu equipo. En Ajustes podés bajar una copia de seguridad.</p></div>`}
+function srcBody(src,d,card){
+  const isV=src==='visa',filterKey=isV?'filterV':'filterM';let h='';
   const c=d.meta.control,ctrlOk=c!=null&&Math.abs(c)<0.05;
   h+=`<div class="row" style="margin-top:12px"><span class="small mut">${esc(d.meta.archivo||'')}</span>
-   ${c==null?'<span class="pill warn">Sin control de cuadre (Excel/CSV)</span>':ctrlOk?'<span class="pill ok">Cuadra con el resumen ✓</span>':`<span class="pill bad">No cuadra: diferencia ${$2(c)}</span>`}
-   <span class="small mut">${d.txs.length} movimientos</span><button class="btn danger" data-act="delSrc" data-src="${src}">Borrar este resumen</button></div>`;
-  if(isV)h+=`<p class="small mut">Total a pagar del PDF: <b>${d.meta.total!=null?$2(d.meta.total):'—'}</b> · Suma de movimientos: <b>${$2(d.meta.suma)}</b>${d.meta.totalUsd?` · Además hay US$ ${nf2.format(d.meta.totalUsd)} en dólares (no incluidos en pesos).`:''}${d.meta.cierre?` · Cierre: ${d.meta.cierre.split('-').reverse().join('/')}`:''}</p>`;
+   ${c==null?'<span class="pill warn">Sin control de cuadre</span>':ctrlOk?'<span class="pill ok">Cuadra con el resumen ✓</span>':`<span class="pill bad">No cuadra: diferencia ${$2(c)}</span>`}
+   <span class="small mut">${d.txs.length} movimientos</span><button class="btn danger" data-act="delSrc" data-src="${src}"${card?` data-card="${card.id}"`:''}>Borrar este resumen</button></div>`;
+  if(isV)h+=`<p class="small mut">${card&&card.kind==='amex'?'Saldo actual':'Total a pagar'} del PDF: <b>${d.meta.total!=null?$2(d.meta.total):'—'}</b> · Suma de movimientos: <b>${$2(d.meta.suma)}</b>${d.meta.totalUsd?` · Además hay US$ ${nf2.format(d.meta.totalUsd)} en dólares (no incluidos en pesos).`:''}${d.meta.cierre?` · Cierre: ${d.meta.cierre.split('-').reverse().join('/')}`:''}</p>`;
   else h+=`<p class="small mut">Saldo inicial: <b>${$2(d.meta.inicial)}</b> · Saldo final: <b>${$2(d.meta.final)}</b> · Suma de movimientos: <b>${$2(d.meta.suma)}</b></p>`;
   if(d.meta.aviso)h+=`<div class="note">${esc(d.meta.aviso)}</div>`;
   const pend=d.txs.filter(t=>(t.tipo==='Ingreso'||t.tipo==='Gasto')&&t.cat==='Sin clasificar').length,f0=state.ui[filterKey]||'todos',f=(f0==='pend'&&pend===0)?'todos':f0;
@@ -456,8 +594,29 @@ function viewSource(src){
     <td>${selectHtml(TIPOS,t.tipo,`data-edit="tipo" data-src="${src}" data-id="${t.id}"`)}</td>
     <td>${selectHtml(cats,t.cat,`data-edit="cat" data-src="${src}" data-id="${t.id}"`).replace('</select>','<option value="__new__">➕ Nueva categoría…</option></select>')}</td>
     <td>${t.tipo==='Gasto'?selectHtml(FLAGS,t.flag,`data-edit="flag" data-src="${src}" data-id="${t.id}"`):''}</td></tr>`).join('');
-  h+=`<div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Descripción</th><th class="n">Monto</th><th>Tipo</th><th>Categoría</th><th>Fijo / variable</th></tr></thead><tbody>${rowsHtml||'<tr><td colspan="6" class="mut">No hay movimientos con este filtro.</td></tr>'}</tbody></table></div></div>`;
+  h+=`<div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Descripción</th><th class="n">Monto</th><th>Tipo</th><th>Categoría</th><th>Fijo / variable</th></tr></thead><tbody>${rowsHtml||'<tr><td colspan="6" class="mut">No hay movimientos con este filtro.</td></tr>'}</tbody></table></div>`;
   return h;
+}
+function viewCards(){
+  const m=getMonth(state.ui.month),cs=cardsOf(m);
+  let h=(sortedKeys().length?'':introCard())+`<div class="card"><h2>Resúmenes de tarjeta — ${monthLabel(state.ui.month)}</h2>
+  <label class="drop" data-drop="visa"><input type="file" accept=".pdf,.xlsx,.xls,.csv" data-file="visa">
+  <b>${cs.length?'Agregar otra tarjeta (o reemplazar una)':'Subir resumen de tarjeta'}</b><br><span class="small">Tocá para elegir el PDF (o arrastralo acá). Reconoce solo Visa y American Express (Santander); con otros bancos hace una lectura genérica que tenés que revisar. También acepta Excel/CSV. El archivo no sale de tu compu.</span></label>
+  <p class="small mut">Subí cada tarjeta por separado: se suman en el resumen. Si subís otra vez la misma tarjeta del mismo mes, la reemplaza. El mes se toma de la fecha de cierre del resumen.</p></div>`;
+  if(!cs.length)return h+`<div class="card"><p class="mut small">Todavía no hay tarjetas cargadas para este mes.</p></div>`;
+  for(const c of cs){
+    const tot=-c.txs.reduce((a,t)=>a+(t.tipo==='Gasto'||t.tipo==='Interno'?t.monto:0),0);
+    h+=`<div class="card"><div class="row"><input type="text" data-cardname="${c.id}" value="${esc(c.nombre)}" style="font-weight:600;max-width:260px" aria-label="Nombre de la tarjeta"><span class="pill">${c.kind==='visa'?'Visa':c.kind==='amex'?'American Express':'Formato genérico'}</span></div>${srcBody('visa',c,c)}</div>`;
+  }
+  return h;
+}
+function viewSource(src){
+  const m=getMonth(state.ui.month),d=m[src];
+  let h=(sortedKeys().length?'':introCard())+`<div class="card"><h2>Resumen de Mercado Pago — ${monthLabel(state.ui.month)}</h2>
+  <label class="drop" data-drop="${src}"><input type="file" accept=".pdf,.xlsx,.xls,.csv" data-file="${src}">
+  <b>${d?'Reemplazar archivo':'Subir archivo'}</b><br><span class="small">Tocá para elegir el PDF (o arrastralo acá). También acepta Excel/CSV (experimental). El archivo no sale de tu compu.</span></label>`;
+  if(!d){h+=`<p class="mut small">Todavía no hay Mercado Pago cargado para este mes.</p></div>`;return h}
+  return h+srcBody(src,d,null)+`</div>`;
 }
 
 function viewExtras(){
@@ -481,18 +640,19 @@ function viewExtras(){
 function bars(rows,total){return rows.map(([l,v])=>`<tr><td>${esc(l)}</td><td class="n">${$0(v)}</td><td class="n">${total>0?Math.round(v/total*100):0}%</td><td style="width:35%"><div class="bar" style="width:${total>0?Math.max(2,Math.abs(v)/total*100):0}%"></div></td></tr>`).join('')}
 function viewResumen(){
   const k=state.ui.month,m=getMonth(k),S=summarize(k);
-  if(!S)return `<div class="card"><h2>Resumen de ${monthLabel(k)}</h2><p class="mut">Todavía no cargaste datos de este mes. Empezá por la pestaña 1 · Tarjeta o 2 · Mercado Pago.</p></div>`;
+  if(!S)return `<div class="card"><h2>Resumen de ${monthLabel(k)}</h2><p class="mut">Todavía no cargaste datos de este mes. Empezá por la pestaña 1 · Tarjetas o 2 · Mercado Pago.</p></div>`;
   const keys=sortedKeys(),prevK=keys.filter(x=>x<k).pop(),P=prevK?summarize(prevK):null,pr=projection(k);
-  const steps=[['Tarjeta',!!m.visa],['Mercado Pago',!!m.mp],['Sueldo del mes',m.sueldo!=null]].map(([l,ok])=>`<span class="pill ${ok?'ok':'warn'}">${ok?'✓':'•'} ${l}</span>`).join(' ');
+  const nC=cardsOf(m).length,steps=[['Tarjetas'+(nC>1?' ('+nC+')':''),nC>0],['Mercado Pago',!!m.mp],['Sueldo del mes',m.sueldo!=null]].map(([l,ok])=>`<span class="pill ${ok?'ok':'warn'}">${ok?'✓':'•'} ${l}</span>`).join(' ');
   let h=`<div class="card"><div class="row"><h2 style="margin:0">Resumen de ${monthLabel(k)}</h2>${steps}<span style="flex:1"></span><button class="btn" data-act="xlsx">Descargar Excel</button></div></div>`;
   h+=`<div class="grid g4"><div class="card kpi"><div class="l">Ingresos</div><div class="v">${$0(S.ingresos)}</div><div class="s">Sueldo ${$0(S.ingSueldo)} · Clientes ${$0(S.ingClientes)} · Otros ${$0(S.ingOtros)} · Rend. ${$0(S.rend)}</div></div>
-  <div class="card kpi"><div class="l">Gastos</div><div class="v">${$0(S.gasto)}</div><div class="s">Tarjeta ${$0(S.gastoVisa)} · MP ${$0(S.gastoMP)} · Extras ${$0(S.gastoExtra)}</div></div>
+  <div class="card kpi"><div class="l">Gastos</div><div class="v">${$0(S.gasto)}</div><div class="s">${Object.keys(S.porTarjeta).length>1?Object.entries(S.porTarjeta).map(([n,v])=>esc(n)+' '+$0(v)).join(' · '):'Tarjeta '+$0(S.gastoVisa)} · MP ${$0(S.gastoMP)} · Extras ${$0(S.gastoExtra)}</div></div>
   <div class="card kpi"><div class="l">Resultado del mes</div><div class="v ${S.resultado<0?'neg':'pos'}">${$0(S.resultado)}</div><div class="s">${P?'Mes anterior: '+$0(P.resultado):'—'}</div></div>
   <div class="card kpi"><div class="l">Tasa de ahorro</div><div class="v ${S.tasa<0?'neg':'pos'}">${Math.round(S.tasa*100)}%</div><div class="s">Resultado / ingresos</div></div></div>`;
-  const cv=m.visa&&m.visa.meta.control,cm=m.mp&&m.mp.meta.control,chk=[];
-  chk.push(m.visa?(cv==null?'<span class="pill warn">Tarjeta: sin control</span>':Math.abs(cv)<0.05?'<span class="pill ok">Tarjeta cuadra con el PDF ✓</span>':`<span class="pill bad">Tarjeta no cuadra (${$2(cv)})</span>`):'<span class="pill warn">Falta cargar la tarjeta</span>');
+  const cm=m.mp&&m.mp.meta.control,chk=[];
+  for(const c of cardsOf(m)){const cv=c.meta.control;chk.push(cv==null?`<span class="pill warn">${esc(c.nombre)}: sin control</span>`:Math.abs(cv)<0.05?`<span class="pill ok">${esc(c.nombre)} cuadra con el PDF ✓</span>`:`<span class="pill bad">${esc(c.nombre)} no cuadra (${$2(cv)})</span>`)}
+  if(!nC)chk.push('<span class="pill warn">Falta cargar la tarjeta</span>');
   chk.push(m.mp?(cm==null?'<span class="pill warn">Mercado Pago: sin control</span>':Math.abs(cm)<0.05?'<span class="pill ok">Mercado Pago cuadra con el PDF ✓</span>':`<span class="pill bad">Mercado Pago no cuadra (${$2(cm)})</span>`):'<span class="pill warn">Falta cargar Mercado Pago</span>');
-  if(S.pend)chk.push(`<span class="pill warn">${S.pend} movimientos sin clasificar</span> <button class="btn" data-act="tab" data-k="tarjeta">Revisar tarjeta</button> <button class="btn" data-act="tab" data-k="mp">Revisar MP</button>`);
+  if(S.pend)chk.push(`<span class="pill warn">${S.pend} movimientos sin clasificar</span> <button class="btn" data-act="tab" data-k="tarjeta">Revisar tarjetas</button> <button class="btn" data-act="tab" data-k="mp">Revisar MP</button>`);
   if(S.usd)chk.push(`<span class="pill warn">US$ ${nf2.format(S.usd)} en dólares no incluidos en los pesos</span>`);
   h+=`<div class="card"><div class="row">${chk.join(' ')}</div></div>`;
   const tipoRows=[...FLAGS.map(f=>[f,S.porFlag[f]]),['Sin marcar',S.sinMarcar]].filter(r=>Math.abs(r[1])>0.5);
@@ -517,7 +677,26 @@ function viewResumen(){
   return h;
 }
 
-function viewHistorial(){
+const PERIODOS={trim:['Trimestral','trimestre'],sem:['Semestral','semestre'],anio:['Anual','año']};
+function periodRows(kind){
+  const groups={};
+  for(const k of sortedKeys()){const [y,m]=k.split('-').map(Number),g=kind==='trim'?y+' · T'+Math.ceil(m/3):kind==='sem'?y+' · S'+(m<=6?1:2):String(y),per=kind==='trim'?3:kind==='sem'?6:12;(groups[g]=groups[g]||{ks:[],per}).ks.push(k)}
+  return Object.entries(groups).map(([g,o])=>{
+    const A={g,n:o.ks.length,per:o.per,ingresos:0,gasto:0,fijo:0,cuota:0,variable:0,unico:0,resultado:0};
+    o.ks.forEach(k=>{const S=summarize(k);A.ingresos+=S.ingresos;A.gasto+=S.gasto;A.fijo+=S.porFlag.Fijo;A.cuota+=S.porFlag.Cuota;A.variable+=S.porFlag.Variable;A.unico+=S.porFlag['Único'];A.resultado+=S.resultado});
+    A.tasa=A.ingresos>0?A.resultado/A.ingresos:0;return A;
+  }).sort((a,b)=>a.g<b.g?1:-1);
+}
+function periodCard(){
+  if(!sortedKeys().length)return '';
+  const kind=state.ui.period||'trim',rows=periodRows(kind);
+  return `<div class="card"><div class="row"><h2 style="margin:0">Resumen por período</h2><span class="chips">${Object.entries(PERIODOS).map(([k,[l]])=>`<button class="chip${kind===k?' on':''}" data-act="period" data-v="${k}">${l}</button>`).join('')}</span></div>
+  <p class="small mut">Suma los meses que cargaste. Si a un período le faltan meses, lo indica en "Meses".</p>
+  <div class="tablewrap"><table><thead><tr><th>Período</th><th>Meses</th><th class="n">Ingresos</th><th class="n">Gastos</th><th class="n">Fijos</th><th class="n">Cuotas</th><th class="n">Variables</th><th class="n">Únicos</th><th class="n">Resultado</th><th class="n">Ahorro %</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td>${r.g}</td><td class="small${r.n<r.per?' neg':''}">${r.n} de ${r.per}</td><td class="n">${$0(r.ingresos)}</td><td class="n">${$0(r.gasto)}</td><td class="n">${$0(r.fijo)}</td><td class="n">${$0(r.cuota)}</td><td class="n">${$0(r.variable)}</td><td class="n">${$0(r.unico)}</td><td class="n ${r.resultado<0?'neg':'pos'}">${$0(r.resultado)}</td><td class="n">${Math.round(r.tasa*100)}%</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+function viewHistorial(){return viewHistorialMeses()+periodCard()}
+function viewHistorialMeses(){
   const keys=sortedKeys();
   if(!keys.length)return `<div class="card"><h2>Historial</h2><p class="mut">Cuando cargues tu primer mes, acá vas a ver la evolución.</p></div>`;
   const rows=keys.map(k=>({k,S:summarize(k)})),last=rows.slice(-12),max=Math.max(1,...last.flatMap(r=>[r.S.ingresos,r.S.gasto])),W=640,H=220,bw=Math.min(28,W/last.length/2.6);
@@ -540,18 +719,37 @@ function viewAjustes(){
 }
 
 /* ============================ Acciones ============================ */
-function findTx(src,id){const m=getMonth(state.ui.month);const arr=src==='visa'?(m.visa&&m.visa.txs):src==='mp'?(m.mp&&m.mp.txs):m.extras;return(arr||[]).find(t=>t.id===id)}
+function findTx(src,id){const m=getMonth(state.ui.month);const arr=src==='visa'?cardTxs(m):src==='mp'?(m.mp&&m.mp.txs):m.extras;return(arr||[]).find(t=>t.id===id)}
+function reclassifyMpPagos(){
+  const pagos=allPagos();
+  for(const mm of Object.values(state.months))if(mm.mp){const own=norm(mm.mp.meta.nombre||'').split(/\s+/).filter(Boolean);mm.mp.txs.forEach(t=>{if(t.cat==='Transferencia propia'||t.cat==='Pago Visa'){const pv=pagos.some(p=>Math.abs(Math.abs(t.monto)-p)<=100);if(pv)t.cat='Pago tarjeta'}})}
+}
+async function loadCard(file){
+  try{
+    const parsed=await parseCardFile(file),key=parsed.meta.monthKey||state.ui.month,c=parsed.meta.card||{kind:'generic',last4:null,nombre:'Tarjeta'};
+    const idKey=c.kind+'-'+(c.last4||(c.kind==='generic'?norm(c.base||file.name).replace(/[^a-z0-9]+/g,'-').slice(0,20):'1'));
+    const prevM=state.months[key],ix=prevM?cardsOf(prevM).findIndex(x=>x.idKey===idKey):-1;
+    if(ix>=0&&!confirm('Ya cargaste '+prevM.tarjetas[ix].nombre+' en '+monthLabel(key)+'. ¿Reemplazarla?'))return;
+    const m=ensureMonth(key);state.ui.month=key;
+    const ctx0={own:[],visaPagos:[]};parsed.txs.forEach(t=>classifyTx('visa',t,ctx0));
+    const old=ix>=0?m.tarjetas[ix]:null;
+    if(old&&(!parsed.meta.cuotasProx||!parsed.meta.cuotasProx.length)&&old.meta.cuotasProx&&old.meta.cuotasProx.length)parsed.meta.cuotasProx=old.meta.cuotasProx;
+    const card={id:old?old.id:uid(),idKey,nombre:old?old.nombre:c.nombre,kind:c.kind,meta:parsed.meta,txs:parsed.txs};
+    if(old)m.tarjetas[ix]=card;else m.tarjetas.push(card);
+    reclassifyMpPagos();save();render();
+    const ct=parsed.meta.control;toast(monthLabel(key)+' · '+card.nombre+': '+parsed.txs.length+' movimientos leídos'+(ct==null?(c.kind==='generic'?' (lectura genérica: revisalos)':''):Math.abs(ct)<0.05?' y el total cuadra ✓':' — OJO: no cuadra por '+$2(ct)),(ct!=null&&Math.abs(ct)>=0.05)||c.kind==='generic');
+  }catch(e){console.error(e);toast('No pude leer el archivo: '+e.message,true)}
+}
 async function loadSource(src,file){
+  if(src==='visa')return loadCard(file);
   try{
     const isPdf=/\.pdf$/i.test(file.name);
-    const parsed=isPdf?(src==='visa'?await parseVisaPdf(file):await parseMpPdf(file)):await parseTableFile(file,src);
+    const parsed=isPdf?await parseMpPdf(file):await parseTableFile(file,src);
     const key=parsed.meta.monthKey||state.ui.month,existing=state.months[key]&&state.months[key][src];
     if(existing&&!confirm('Ya hay un archivo cargado para '+monthLabel(key)+'. ¿Reemplazarlo?'))return;
     const m=ensureMonth(key);state.ui.month=key;
-    if(src==='mp'){const ctx0={own:norm(parsed.meta.nombre||'').split(/\s+/).filter(Boolean),visaPagos:Object.values(state.months).flatMap(x=>x.visa?x.visa.meta.pagos||[]:[])};parsed.txs.forEach(t=>classifyTx('mp',t,ctx0))}
-    else{const ctx0={own:[],visaPagos:[]};parsed.txs.forEach(t=>classifyTx('visa',t,ctx0))}
+    const ctx0={own:norm(parsed.meta.nombre||'').split(/\s+/).filter(Boolean),visaPagos:allPagos()};parsed.txs.forEach(t=>classifyTx('mp',t,ctx0));
     m[src]=parsed;
-    if(src==='visa')for(const mm of Object.values(state.months))if(mm.mp){const ctx1={own:norm(mm.mp.meta.nombre||'').split(/\s+/).filter(Boolean),visaPagos:Object.values(state.months).flatMap(x=>x.visa?x.visa.meta.pagos||[]:[])};mm.mp.txs.forEach(t=>{if(t.cat==='Transferencia propia'){const pv=ctx1.visaPagos.some(p=>Math.abs(Math.abs(t.monto)-p)<=100);if(pv)t.cat='Pago Visa'}})}
     save();render();
     const c=parsed.meta.control;toast(monthLabel(key)+': '+parsed.txs.length+' movimientos leídos'+(c==null?'':Math.abs(c)<0.05?' y el total cuadra ✓':' — OJO: no cuadra por '+$2(c)),c!=null&&Math.abs(c)>=0.05);
   }catch(e){console.error(e);toast('No pude leer el archivo: '+e.message,true)}
@@ -565,7 +763,7 @@ function editTx(src,id,field,val){
   if(src!=='extra'){
     const k=normKey(t.desc);state.mappings[k]={tipo:t.tipo,cat:t.cat,flag:t.flag};
     const m=getMonth(state.ui.month);let n=0;
-    for(const [s2,arr] of [['visa',m.visa?m.visa.txs:[]],['mp',m.mp?m.mp.txs:[]]])for(const o of arr)if(o!==t&&normKey(o.desc)===k&&!(o.cuota&&field==='flag')){o.tipo=t.tipo;o.cat=t.cat;o.flag=o.cuota?o.flag:t.flag;if(o.tipo!=='Gasto')o.flag=null;n++}
+    for(const [s2,arr] of [['visa',cardTxs(m)],['mp',m.mp?m.mp.txs:[]]])for(const o of arr)if(o!==t&&normKey(o.desc)===k&&!(o.cuota&&field==='flag')){o.tipo=t.tipo;o.cat=t.cat;o.flag=o.cuota?o.flag:t.flag;if(o.tipo!=='Gasto')o.flag=null;n++}
     if(n)toast('Apliqué lo mismo a '+n+' movimiento(s) igual(es) y lo recuerdo para los próximos meses');
   }
   save();render();
@@ -576,8 +774,9 @@ function exportXlsx(){
   const hist=[['Mes','Ingresos','Sueldo','Clientes','Otros','Rendimientos','Gastos','Fijos','Cuotas','Variables','Únicos','Negocio','Resultado','Ahorro %']];
   keys.forEach(k=>{const S=summarize(k);hist.push([k,S.ingresos,S.ingSueldo,S.ingClientes,S.ingOtros,S.rend,S.gasto,S.porFlag.Fijo,S.porFlag.Cuota,S.porFlag.Variable,S.porFlag['Único'],S.porFlag.Negocio,S.resultado,Math.round(S.tasa*1000)/10])});
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(hist),'Historial');
+  for(const [kd,[lab]] of Object.entries(PERIODOS)){const pr=[['Período','Meses cargados','Meses del período','Ingresos','Gastos','Fijos','Cuotas','Variables','Únicos','Resultado','Ahorro %']];periodRows(kd).forEach(r=>pr.push([r.g,r.n,r.per,r.ingresos,r.gasto,r.fijo,r.cuota,r.variable,r.unico,r.resultado,Math.round(r.tasa*1000)/10]));XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(pr),lab)}
   const m=getMonth(state.ui.month),mv=[['Origen','Fecha','Descripción','Monto','Tipo','Categoría','Fijo/Variable']];
-  for(const [o,arr] of [['Tarjeta',m.visa?m.visa.txs:[]],['Mercado Pago',m.mp?m.mp.txs:[]],['Extra',m.extras||[]]])arr.forEach(t=>mv.push([o,t.fecha,t.desc,t.monto,t.tipo,t.cat,t.flag||'']));
+  for(const [o,arr] of [...cardsOf(m).map(c=>[c.nombre,c.txs]),['Mercado Pago',m.mp?m.mp.txs:[]],['Extra',m.extras||[]]])arr.forEach(t=>mv.push([o,t.fecha,t.desc,t.monto,t.tipo,t.cat,t.flag||'']));
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(mv),('Mov '+state.ui.month));
   XLSX.writeFile(wb,'finanzas_'+state.ui.month+'.xlsx');
 }
@@ -588,7 +787,7 @@ document.addEventListener('click',e=>{
   else if(a==='goMonth'){state.ui.month=b.dataset.k;save();render()}
   else if(a==='goMonthResumen'){e.preventDefault();state.ui.month=b.dataset.k;state.ui.tab='resumen';save();render();window.scrollTo(0,0)}
   else if(a==='filter'){state.ui[b.dataset.key]=b.dataset.v;save();render()}
-  else if(a==='delSrc'){if(confirm('¿Borrar este resumen de '+monthLabel(state.ui.month)+'?')){const m=ensureMonth(state.ui.month);m[b.dataset.src]=null;save();render()}}
+  else if(a==='delSrc'){if(confirm('¿Borrar este resumen de '+monthLabel(state.ui.month)+'?')){const m=ensureMonth(state.ui.month);if(b.dataset.card)m.tarjetas=m.tarjetas.filter(c=>c.id!==b.dataset.card);else m[b.dataset.src]=null;save();render()}}
   else if(a==='addExtra'){
     const desc=document.getElementById('xDesc').value.trim(),monto=Math.abs(parseNum(document.getElementById('xMonto').value)),tipo=document.getElementById('xTipo').value;
     if(!desc||!monto){toast('Completá descripción y monto',true);return}
@@ -597,6 +796,7 @@ document.addEventListener('click',e=>{
     m.extras.push({id:uid(),fecha:document.getElementById('xFecha').value||state.ui.month+'-01',desc,monto:tipo==='Gasto'?-monto:monto,usd:0,cuota:null,tipo,cat,flag:tipo==='Gasto'?document.getElementById('xFlag').value:null});
     save();render();toast('Agregado')}
   else if(a==='delExtra'){const m=ensureMonth(state.ui.month);m.extras=m.extras.filter(t=>t.id!==b.dataset.id);save();render()}
+  else if(a==='period'){state.ui.period=b.dataset.v;save();render()}
   else if(a==='resetProj'){ensureMonth(state.ui.month).proj={};save();render()}
   else if(a==='delMonth'){if(confirm('¿Borrar todos los datos de '+monthLabel(b.dataset.k)+'?')){delete state.months[b.dataset.k];save();render()}}
   else if(a==='xlsx')exportXlsx();
@@ -608,10 +808,11 @@ document.addEventListener('change',e=>{
   const t=e.target;
   if(t.matches('[data-file]')){
     const f=t.files[0];if(!f)return;
-    if(t.dataset.file==='restore'){const r=new FileReader();r.onload=()=>{try{const o=JSON.parse(r.result);if(!o.months)throw new Error('archivo inválido');if(!confirm('Esto reemplaza lo que hay ahora. ¿Continuar?'))return;const d=DEFAULT_STATE();state={...d,...o,settings:{...d.settings,...(o.settings||{})},ui:{...d.ui,...(o.ui||{})}};save();render();toast('Copia restaurada')}catch(err){toast('No pude restaurar: '+err.message,true)}};r.readAsText(f)}
+    if(t.dataset.file==='restore'){const r=new FileReader();r.onload=()=>{try{const o=JSON.parse(r.result);if(!o.months)throw new Error('archivo inválido');if(!confirm('Esto reemplaza lo que hay ahora. ¿Continuar?'))return;const d=DEFAULT_STATE();state=migrate({...d,...o,settings:{...d.settings,...(o.settings||{})},ui:{...d.ui,...(o.ui||{})}});save();render();toast('Copia restaurada')}catch(err){toast('No pude restaurar: '+err.message,true)}};r.readAsText(f)}
     else loadSource(t.dataset.file,f);
     t.value='';
   }
+  else if(t.matches('[data-cardname]')){const c=cardsOf(getMonth(state.ui.month)).find(x=>x.id===t.dataset.cardname);if(c&&t.value.trim()){c.nombre=t.value.trim();save();render()}}
   else if(t.matches('[data-edit]'))editTx(t.dataset.src==='extra'?'extra':t.dataset.src,t.dataset.id,t.dataset.edit,t.value);
   else if(t.id==='mSel'||t.id==='ySel'){const mo=document.getElementById('mSel').value,yr=document.getElementById('ySel').value;state.ui.month=yr+'-'+String(mo).padStart(2,'0');save();render()}
   else if(t.id==='sueldoIn'){const m=ensureMonth(state.ui.month);m.sueldo=t.value.trim()===''?null:parseNum(t.value);save();render()}
@@ -630,7 +831,7 @@ document.addEventListener('input',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.closest&&e.target.closest('#extraForm')&&e.target.tagName==='INPUT'){e.preventDefault();document.querySelector('[data-act=addExtra]').click()}});
 
 loadState();render();
-window.APP={get state(){return state},summarize,projection,parseVisaPdf,parseMpPdf,loadSource};
+window.APP={get state(){return state},summarize,projection,parseVisaPdf,parseMpPdf,parseAmexPdf,parseCardFile,loadSource,loadCard,pdfPages,parseGenericCardPdf,periodRows};
 </script>
 </body>
 </html>
