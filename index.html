@@ -184,6 +184,9 @@ const allPagos=()=>Object.values(state.months).flatMap(x=>cardsOf(x).flatMap(c=>
 function mkCierre(y,m,d){const dt=new Date(y,m-1,d-15);return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')}
 const getMonth=k=>state.months[k]||emptyMonth();
 const ensureMonth=k=>{if(!state.months[k])state.months[k]=emptyMonth();return state.months[k]};
+const CAT_ICON={'Sin clasificar':'❓','Supermercado':'🛒','Servicios':'💡','Salud':'💊','Comida y salidas':'🍔','Entretenimiento':'🎮','Otra tarjeta (sin detalle)':'💳','Compras en cuotas':'🛍️','Suscripciones':'📺','Celular':'📱','Impuestos y percepciones':'🧾','Vivienda':'🏠','Transporte':'🚗','Nafta':'⛽','Seguro de auto':'🛡️','Reparación de auto':'🔧','Negocio (costos)':'💼','Sueldo':'💰','Cliente (negocio)':'💼','Otros ingresos':'🎁','Transferencia propia':'🏦','Ida y vuelta':'🔁','Pago Visa':'💳','Pago tarjeta':'💳','Rendimiento':'📈'};
+const icon=c=>CAT_ICON[c]||'🏷️';
+const icLab=c=>icon(c)+' '+c;
 const allCats=()=>[...BASE_CATS,...state.customCats.filter(c=>!BASE_CATS.includes(c))];
 
 /* ============================ Lectura de PDF ============================ */
@@ -561,7 +564,7 @@ function projection(key){
 
 /* ============================ Interfaz ============================ */
 const $app=document.getElementById('app');
-function selectHtml(opts,val,attrs){return `<select ${attrs}>${opts.map(o=>`<option${o===val?' selected':''}>${esc(o)}</option>`).join('')}</select>`}
+function selectHtml(opts,val,attrs,lab){return `<select ${attrs}>${opts.map(o=>`<option value="${esc(o)}"${o===val?' selected':''}>${esc(lab?lab(o):o)}</option>`).join('')}</select>`}
 function pendCount(k){const S=summarize(k);return S?S.pend:0}
 function renderChrome(){
   const [cy,cm]=state.ui.month.split('-').map(Number),yNow=new Date().getFullYear(),ys=new Set([yNow-2,yNow-1,yNow,yNow+1,cy,...sortedKeys().map(k=>+k.slice(0,4))]);
@@ -589,10 +592,10 @@ function srcBody(src,d,card){
    <input type="text" placeholder="Buscar…" data-search="${src}" style="min-width:180px"></div>
    <p class="small mut" style="margin:0 0 8px">Cuando cambiás una categoría, la página la recuerda para ese comercio o persona y la aplica sola en los próximos meses.</p>`;
   const cats=allCats(),rowsHtml=d.txs.filter(t=>f==='todos'||(f==='pend'&&(t.tipo==='Ingreso'||t.tipo==='Gasto')&&t.cat==='Sin clasificar')||(f==='gasto'&&t.tipo==='Gasto')||(f==='ingreso'&&t.tipo==='Ingreso')).map(t=>`<tr data-tx="${t.id}" data-search-text="${esc(norm(t.desc))}">
-    <td class="small">${t.fecha?t.fecha.split('-').reverse().join('/'):'—'}</td><td>${esc(t.desc)}${t.cuota?` <span class="pill warn">cuota ${t.cuota[0]}/${t.cuota[1]}</span>`:''}${t.usd?` <span class="pill warn">US$ ${nf2.format(t.usd)}</span>`:''}</td>
+    <td class="small">${t.fecha?t.fecha.split('-').reverse().join('/'):'—'}</td><td><span title="${esc(t.cat)}">${icon(t.cat)}</span> ${esc(t.desc)}${t.cuota?` <span class="pill warn">cuota ${t.cuota[0]}/${t.cuota[1]}</span>`:''}${t.usd?` <span class="pill warn">US$ ${nf2.format(t.usd)}</span>`:''}</td>
     <td class="n ${t.monto<0?'neg':'pos'}">${t.monto?$2(t.monto):''}</td>
     <td>${selectHtml(TIPOS,t.tipo,`data-edit="tipo" data-src="${src}" data-id="${t.id}"`)}</td>
-    <td>${selectHtml(cats,t.cat,`data-edit="cat" data-src="${src}" data-id="${t.id}"`).replace('</select>','<option value="__new__">➕ Nueva categoría…</option></select>')}</td>
+    <td>${selectHtml(cats,t.cat,`data-edit="cat" data-src="${src}" data-id="${t.id}"`,icLab).replace('</select>','<option value="__new__">➕ Nueva categoría…</option></select>')}</td>
     <td>${t.tipo==='Gasto'?selectHtml(FLAGS,t.flag,`data-edit="flag" data-src="${src}" data-id="${t.id}"`):''}</td></tr>`).join('');
   h+=`<div class="tablewrap"><table><thead><tr><th>Fecha</th><th>Descripción</th><th class="n">Monto</th><th>Tipo</th><th>Categoría</th><th>Fijo / variable</th></tr></thead><tbody>${rowsHtml||'<tr><td colspan="6" class="mut">No hay movimientos con este filtro.</td></tr>'}</tbody></table></div>`;
   return h;
@@ -629,7 +632,7 @@ function viewExtras(){
   <div class="field" style="flex:1"><label>Descripción</label><input type="text" id="xDesc" placeholder="Ej: cobro en efectivo cliente"></div>
   <div class="field"><label>Monto</label><input type="text" class="money" id="xMonto" inputmode="decimal" placeholder="0"></div>
   <div class="field"><label>Tipo</label>${selectHtml(['Ingreso','Gasto'],'Gasto','id="xTipo"')}</div>
-  <div class="field"><label>Categoría</label>${selectHtml(cats,'Sin clasificar','id="xCat"')}</div>
+  <div class="field"><label>Categoría</label>${selectHtml(cats,'Sin clasificar','id="xCat"',icLab)}</div>
   <div class="field"><label>Fijo / variable</label>${selectHtml(FLAGS,'Variable','id="xFlag"')}</div>
   <div class="field"><label>&nbsp;</label><button class="btn pri" data-act="addExtra">Agregar</button></div></div>`;
   h+=`<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>Fecha</th><th>Descripción</th><th class="n">Monto</th><th>Tipo</th><th>Categoría</th><th>Fijo / variable</th><th></th></tr></thead><tbody>`;
@@ -658,7 +661,7 @@ function viewResumen(){
   const tipoRows=[...FLAGS.map(f=>[f,S.porFlag[f]]),['Sin marcar',S.sinMarcar]].filter(r=>Math.abs(r[1])>0.5);
   const catRows=Object.entries(S.porCat).filter(r=>Math.abs(r[1])>0.5).sort((a,b)=>b[1]-a[1]);
   h+=`<div class="grid g2"><div class="card"><h2>Gastos por tipo</h2><table><tbody>${bars(tipoRows,S.gasto)}</tbody></table></div>
-  <div class="card"><h2>Gastos por categoría</h2><table><thead><tr><th>Categoría</th><th class="n">Mes</th><th class="n">%</th><th class="n">${P?'vs mes ant.':''}</th></tr></thead><tbody>${catRows.map(([c,v])=>{const pv=P?(P.porCat[c]||0):null,dl=pv==null?'':v-pv;return `<tr><td>${esc(c)}</td><td class="n">${$0(v)}</td><td class="n">${S.gasto>0?Math.round(v/S.gasto*100):0}%</td><td class="n ${dl>0?'neg':'pos'}">${dl===''?'':(dl>0?'+':'')+nf0.format(Math.round(dl))}</td></tr>`}).join('')}</tbody></table></div></div>`;
+  <div class="card"><h2>Gastos por categoría</h2><table><thead><tr><th>Categoría</th><th class="n">Mes</th><th class="n">%</th><th class="n">${P?'vs mes ant.':''}</th></tr></thead><tbody>${catRows.map(([c,v])=>{const pv=P?(P.porCat[c]||0):null,dl=pv==null?'':v-pv;return `<tr><td>${icon(c)} ${esc(c)}</td><td class="n">${$0(v)}</td><td class="n">${S.gasto>0?Math.round(v/S.gasto*100):0}%</td><td class="n ${dl>0?'neg':'pos'}">${dl===''?'':(dl>0?'+':'')+nf0.format(Math.round(dl))}</td></tr>`}).join('')}</tbody></table></div></div>`;
   const inp=(id,l,v)=>`<div class="field"><label>${l}</label><input type="text" class="money" inputmode="decimal" data-proj="${id}" value="${nf0.format(Math.round(v))}"></div>`;
   h+=`<div class="card"><h2>Proyección del mes siguiente</h2><p class="small mut">Fijos del último mes, cuotas que informa la tarjeta para el próximo resumen y variables promedio de los últimos ${pr.nMeses} mes(es). Podés cambiar cualquier número.</p>
   <div class="row">${inp('sueldo','Sueldo',pr.sueldo)}${inp('negocio','Ingreso neto del negocio',pr.negocio)}${inp('otros','Otros ingresos',pr.otros)}${inp('fijos','Gastos fijos',pr.fijos)}${inp('cuotas','Cuotas ya comprometidas',pr.cuotas)}${inp('variables','Variables esperados',pr.variables)}${inp('unicos','Únicos esperados',pr.unicos)}<button class="btn" data-act="resetProj">Volver a valores calculados</button></div>
